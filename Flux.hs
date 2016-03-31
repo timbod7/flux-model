@@ -6,7 +6,7 @@ import qualified Data.Map as M
 
 newtype VoterId = VoterId Int deriving (Show,Eq,Ord,Enum)
 newtype BillId = BillId Int deriving (Show,Eq,Ord,Enum)
-newtype VoteCount = VoteCount Int deriving (Show,Eq,Ord,Num)
+newtype VoteCount = VoteCount Int deriving (Show,Eq,Ord,Num,Enum,Integral,Real)
 newtype LiquidityTokens = LiquidityTokens Int deriving (Show,Eq,Ord,Num)
 
 data Vote = InFavour | Against | Abstained
@@ -70,6 +70,20 @@ swapVote vid1 vid2 bid voteCount tokens
     . (updateBills $ updateMap bid $ updateVotes $ updateMap vid2 $ updateAvailableVotes (\v -> checkGEZero (v-voteCount)))
     . (updateVoters $ updateMap vid1 $ updateLiquidityTokens (\v -> checkGEZero (v+tokens)))
     . (updateVoters $ updateMap vid2 $ updateLiquidityTokens (\v -> checkGEZero (v-tokens)))
+
+distributeLiquidity :: LiquidityTokens -> State -> State
+distributeLiquidity  tokens state = updateVoters (M.map updateVoter)  state
+  where
+    nTotalVotes = totalVotes state
+    updateVoter  vs = vs{
+      liquidityTokens=liquidityTokens vs + ratioMult (votesPerBill vs) nTotalVotes tokens 
+      }
+
+    ratioMult (VoteCount numerator) (VoteCount denominator) (LiquidityTokens v)
+      = LiquidityTokens ((v * numerator) `div` denominator)
+
+totalVotes :: State -> VoteCount
+totalVotes state = sum [ votesPerBill v | v <- M.elems (voters state) ]
 
 setVote :: VoterId -> BillId -> Vote -> State -> State
 setVote vid bid = updateBills . updateMap bid . updateVotes . updateMap vid . updateVote . const
