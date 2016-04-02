@@ -9,29 +9,29 @@ import Control.Lens
 import qualified Data.Map as M
 
 newtype VoterId = VoterId Int deriving (Show,Eq,Ord,Enum)
-newtype BillId = BillId Int deriving (Show,Eq,Ord,Enum)
+newtype IssueId = IssueId Int deriving (Show,Eq,Ord,Enum)
 newtype VoteCount = VoteCount Int deriving (Show,Eq,Ord,Num,Enum,Integral,Real)
 newtype LiquidityTokens = LiquidityTokens Int deriving (Show,Eq,Ord,Num)
 
 data Vote = InFavour | Against | Abstained
 
 data VoterState = VoterState {
-  _votesPerBill :: VoteCount,
+  _votesPerIssue :: VoteCount,
   _liquidityTokens :: LiquidityTokens
 }
                     
 data State = State {
   _voters :: M.Map VoterId VoterState,
-  _bills :: M.Map BillId BillState
+  _issues :: M.Map IssueId IssueState
   }
 
-data VoterBillState = VoterBillState {
+data VoterIssueState = VoterIssueState {
   _availableVotes :: VoteCount,
   _vote :: Vote
 }
 
-data BillState = BillState {
-  _votes :: M.Map VoterId VoterBillState
+data IssueState = IssueState {
+  _votes :: M.Map VoterId VoterIssueState
   }
 
 data VoteResult = VoteResult {
@@ -42,8 +42,8 @@ data VoteResult = VoteResult {
 
 makeLenses ''VoterState
 makeLenses ''State
-makeLenses ''VoterBillState
-makeLenses ''BillState
+makeLenses ''VoterIssueState
+makeLenses ''IssueState
 
 initialState :: State
 initialState = State M.empty M.empty
@@ -55,43 +55,43 @@ newVoter state = (state',vid)
     vid = nextKey (view voters state)
     details = VoterState 1 0
 
-newBill :: State -> (State,BillId)
-newBill state = (state,bid)
+newIssue :: State -> (State,IssueId)
+newIssue state = (state,bid)
   where
-    state' = over bills (M.insert bid details) state
-    bid = nextKey (view bills state)
-    details = BillState (M.map newVotorBillState (view voters state))
-    newVotorBillState vd = VoterBillState (view votesPerBill vd) Abstained
+    state' = over issues (M.insert bid details) state
+    bid = nextKey (view issues state)
+    details = IssueState (M.map newVotorIssueState (view voters state))
+    newVotorIssueState vd = VoterIssueState (view votesPerIssue vd) Abstained
 
-endBill :: BillId -> State -> (State,VoteResult)
-endBill bid state  = (state',result)
+endIssue :: IssueId -> State -> (State,VoteResult)
+endIssue bid state  = (state',result)
   where
-    billState = view (bills . melem bid) state
-    state' = over bills (M.delete bid) state
+    issueState = view (issues . melem bid) state
+    state' = over issues (M.delete bid) state
     result = VoteResult votesFor votesAgainst votesAbstained
-    allVotes = M.elems (view votes billState)
-    votesFor = sum [votes | (VoterBillState votes InFavour) <- allVotes]
-    votesAgainst = sum [votes | (VoterBillState votes Against) <- allVotes]
-    votesAbstained = sum [votes | (VoterBillState votes Abstained) <- allVotes]
+    allVotes = M.elems (view votes issueState)
+    votesFor = sum [votes | (VoterIssueState votes InFavour) <- allVotes]
+    votesAgainst = sum [votes | (VoterIssueState votes Against) <- allVotes]
+    votesAbstained = sum [votes | (VoterIssueState votes Abstained) <- allVotes]
 
-swapVote :: VoterId -> VoterId -> BillId -> VoteCount -> LiquidityTokens -> State -> State
+swapVote :: VoterId -> VoterId -> IssueId -> VoteCount -> LiquidityTokens -> State -> State
 swapVote vid1 vid2 bid voteCount tokens
-    = over (bills . melem bid . votes. melem vid1 . availableVotes) (\v -> checkGEZero (v+voteCount))
-    . over (bills . melem bid . votes . melem vid2 . availableVotes) (\v -> checkGEZero (v-voteCount))
+    = over (issues . melem bid . votes. melem vid1 . availableVotes) (\v -> checkGEZero (v+voteCount))
+    . over (issues . melem bid . votes . melem vid2 . availableVotes) (\v -> checkGEZero (v-voteCount))
     . over (voters . melem vid1 . liquidityTokens) (\v -> checkGEZero (v+tokens))
     . over (voters . melem vid2 . liquidityTokens) (\v -> checkGEZero (v-tokens))
 
 distributeLiquidity :: LiquidityTokens -> State -> State
 distributeLiquidity  toShare state = over voters (M.map updateVoter) state
   where
-    nTotalVotes = sum [view votesPerBill v | v <- M.elems (view voters state)]
-    updateVoter vs = over liquidityTokens (addTokens (view votesPerBill vs) nTotalVotes toShare) vs
+    nTotalVotes = sum [view votesPerIssue v | v <- M.elems (view voters state)]
+    updateVoter vs = over liquidityTokens (addTokens (view votesPerIssue vs) nTotalVotes toShare) vs
 
     addTokens (VoteCount num) (VoteCount denom) (LiquidityTokens toShare) (LiquidityTokens existing)
       = LiquidityTokens (existing + (toShare * num) `div` denom)
 
-setVote :: VoterId -> BillId -> Vote -> State -> State
-setVote vid bid v = set (bills . melem bid . votes . melem vid . vote) v
+setVote :: VoterId -> IssueId -> Vote -> State -> State
+setVote vid bid v = set (issues . melem bid . votes . melem vid . vote) v
 
 ----------------------------------------------------------------------
 -- Helper functions
