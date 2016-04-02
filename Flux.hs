@@ -1,6 +1,10 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE Rank2Types #-}
 
 module Flux where
+
+import Control.Lens
 
 import qualified Data.Map as M
 
@@ -12,22 +16,22 @@ newtype LiquidityTokens = LiquidityTokens Int deriving (Show,Eq,Ord,Num)
 data Vote = InFavour | Against | Abstained
 
 data VoterState = VoterState {
-  votesPerBill :: VoteCount,
-  liquidityTokens :: LiquidityTokens
+  _votesPerBill :: VoteCount,
+  _liquidityTokens :: LiquidityTokens
 }
                     
 data State = State {
-  voters :: M.Map VoterId VoterState,
-  bills :: M.Map BillId BillState
+  _voters :: M.Map VoterId VoterState,
+  _bills :: M.Map BillId BillState
   }
 
 data VoterBillState = VoterBillState {
-  availableVotes :: VoteCount,
-  vote :: Vote
+  _availableVotes :: VoteCount,
+  _vote :: Vote
 }
 
 data BillState = BillState {
-  votes :: M.Map VoterId VoterBillState
+  _votes :: M.Map VoterId VoterBillState
   }
 
 data VoteResult = VoteResult {
@@ -36,57 +40,58 @@ data VoteResult = VoteResult {
   abstained :: VoteCount
 }
 
+makeLenses ''VoterState
+makeLenses ''State
+makeLenses ''VoterBillState
+makeLenses ''BillState
+
 initialState :: State
 initialState = State M.empty M.empty
 
 newVoter :: State -> (State,VoterId)
 newVoter state = (state',vid)
   where
-    state' = state{voters=M.insert vid details (voters state)}
-    vid = nextKey (voters state)
+    state' = over voters (M.insert vid details) state
+    vid = nextKey (view voters state)
     details = VoterState 1 0
 
 newBill :: State -> (State,BillId)
 newBill state = (state,bid)
   where
-    state' = state{bills=M.insert bid details (bills state)}
-    bid = nextKey (bills state)
-    details = BillState (M.map newVotorBillState (voters state))
-    newVotorBillState vd = VoterBillState (votesPerBill vd) Abstained
+    state' = over bills (M.insert bid details) state
+    bid = nextKey (view bills state)
+    details = BillState (M.map newVotorBillState (view voters state))
+    newVotorBillState vd = VoterBillState (view votesPerBill vd) Abstained
 
 endBill :: BillId -> State -> (State,VoteResult)
 endBill bid state  = (state',result)
   where
-    billState = lookupMap bid (bills state)
-    state' = state{bills=M.delete bid (bills state)}
+    billState = view (bills . melem bid) state
+    state' = over bills (M.delete bid) state
     result = VoteResult votesFor votesAgainst votesAbstained
-    votesFor = sum [votes | (VoterBillState votes InFavour) <- M.elems (votes billState)]
-    votesAgainst = sum [votes | (VoterBillState votes Against) <- M.elems (votes billState)]
-    votesAbstained = sum [votes | (VoterBillState votes Abstained) <- M.elems (votes billState)]
+    allVotes = M.elems (view votes billState)
+    votesFor = sum [votes | (VoterBillState votes InFavour) <- allVotes]
+    votesAgainst = sum [votes | (VoterBillState votes Against) <- allVotes]
+    votesAbstained = sum [votes | (VoterBillState votes Abstained) <- allVotes]
 
 swapVote :: VoterId -> VoterId -> BillId -> VoteCount -> LiquidityTokens -> State -> State
 swapVote vid1 vid2 bid voteCount tokens
-    = (updateBills $ updateMap bid $ updateVotes $ updateMap vid1 $ updateAvailableVotes (\v -> checkGEZero (v+voteCount)))
-    . (updateBills $ updateMap bid $ updateVotes $ updateMap vid2 $ updateAvailableVotes (\v -> checkGEZero (v-voteCount)))
-    . (updateVoters $ updateMap vid1 $ updateLiquidityTokens (\v -> checkGEZero (v+tokens)))
-    . (updateVoters $ updateMap vid2 $ updateLiquidityTokens (\v -> checkGEZero (v-tokens)))
+    = over (bills . melem bid . votes. melem vid1 . availableVotes) (\v -> checkGEZero (v+voteCount))
+    . over (bills . melem bid . votes . melem vid2 . availableVotes) (\v -> checkGEZero (v-voteCount))
+    . over (voters . melem vid1 . liquidityTokens) (\v -> checkGEZero (v+tokens))
+    . over (voters . melem vid2 . liquidityTokens) (\v -> checkGEZero (v-tokens))
 
 distributeLiquidity :: LiquidityTokens -> State -> State
-distributeLiquidity  tokens state = updateVoters (M.map updateVoter)  state
+distributeLiquidity  toShare state = over voters (M.map updateVoter) state
   where
-    nTotalVotes = totalVotes state
-    updateVoter  vs = vs{
-      liquidityTokens=liquidityTokens vs + ratioMult (votesPerBill vs) nTotalVotes tokens 
-      }
+    nTotalVotes = sum [view votesPerBill v | v <- M.elems (view voters state)]
+    updateVoter vs = over liquidityTokens (addTokens (view votesPerBill vs) nTotalVotes toShare) vs
 
-    ratioMult (VoteCount numerator) (VoteCount denominator) (LiquidityTokens v)
-      = LiquidityTokens ((v * numerator) `div` denominator)
-
-totalVotes :: State -> VoteCount
-totalVotes state = sum [ votesPerBill v | v <- M.elems (voters state) ]
+    addTokens (VoteCount num) (VoteCount denom) (LiquidityTokens toShare) (LiquidityTokens existing)
+      = LiquidityTokens (existing + (toShare * num) `div` denom)
 
 setVote :: VoterId -> BillId -> Vote -> State -> State
-setVote vid bid = updateBills . updateMap bid . updateVotes . updateMap vid . updateVote . const
+setVote vid bid v = set (bills . melem bid . votes . melem vid . vote) v
 
 ----------------------------------------------------------------------
 -- Helper functions
@@ -95,34 +100,16 @@ nextKey :: (Enum k) => M.Map k a -> k
 nextKey m | M.null m = toEnum 0
           | otherwise = let (k,_) = M.findMax m in succ k
 
-updateBills :: (M.Map BillId BillState -> M.Map BillId BillState) -> State -> State
-updateBills f s = s{bills=f (bills s)}
-
-updateVoters :: (M.Map VoterId VoterState -> M.Map VoterId VoterState) -> State -> State
-updateVoters f s = s{voters=f (voters s)}
-
-updateLiquidityTokens :: (LiquidityTokens -> LiquidityTokens) -> VoterState -> VoterState
-updateLiquidityTokens f s = s{liquidityTokens=f (liquidityTokens s)}
-
-updateVotes :: (M.Map VoterId VoterBillState -> M.Map VoterId VoterBillState) -> BillState -> BillState
-updateVotes f s = s{votes=f (votes s)}
-
-updateVote :: (Vote -> Vote) -> VoterBillState -> VoterBillState
-updateVote f s = s{vote=f (vote s)}
-
-updateAvailableVotes :: (VoteCount -> VoteCount) -> VoterBillState -> VoterBillState
-updateAvailableVotes f s = s{availableVotes=f (availableVotes s)}
-
-updateMap :: (Ord k) => k -> (v->v) -> M.Map k v -> M.Map k v
-updateMap k updatev m = case M.lookup k m of
-  Nothing -> error "missing key"
-  (Just v) -> M.insert k (updatev v) m
-
-lookupMap :: (Ord k) => k -> M.Map k v -> v
-lookupMap k m = case M.lookup k m of
-  Nothing -> error "missing key"
-  (Just v) -> v
-
 checkGEZero :: (Num a, Ord a) => a -> a
 checkGEZero a | a < 0 = error "balance may not be negative"
               | otherwise = a
+
+melem :: (Ord k) => k -> Lens' (M.Map k v) v
+melem k = lens get set
+  where
+    get m = case M.lookup k m of
+      Nothing -> error "missing map key"
+      (Just v) -> v
+    set m v = M.insert k v m
+
+    
