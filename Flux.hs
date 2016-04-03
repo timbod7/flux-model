@@ -5,13 +5,14 @@
 module Flux where
 
 import Control.Lens(view,over,set,makeLenses,lens,Lens')
+import Data.Ratio((%), Rational, numerator, denominator)
 
 import qualified Data.Map as M
 
 newtype VoterId = VoterId Int deriving (Show,Eq,Ord,Enum)
 newtype IssueId = IssueId Int deriving (Show,Eq,Ord,Enum)
 newtype VoteTokens = VoteTokens Int deriving (Show,Eq,Ord,Num,Enum,Integral,Real)
-newtype LiquidityTokens = LiquidityTokens Int deriving (Show,Eq,Ord,Num)
+newtype LiquidityTokens = LiquidityTokens Int deriving (Show,Eq,Ord,Num,Enum,Integral,Real)
 
 -- | The overall system state
 data State = State {
@@ -128,10 +129,10 @@ distributeLiquidity :: LiquidityTokens -> State -> State
 distributeLiquidity  toShare state = over voters (M.map updateVoter) state
   where
     nTotalVotes = sum [view votesPerIssue v | v <- M.elems (view voters state)]
-    updateVoter vs = over liquidityTokens (addTokens (view votesPerIssue vs) nTotalVotes toShare) vs
 
-    addTokens (VoteTokens num) (VoteTokens denom) (LiquidityTokens toShare) (LiquidityTokens existing)
-      = LiquidityTokens (existing + (toShare * num) `div` denom)
+    updateVoter vs = over liquidityTokens ((+) (scale ratio toShare)) vs
+      where
+        ratio = mkRational (view votesPerIssue vs) nTotalVotes
 
 ----------------------------------------------------------------------
 -- Helper functions
@@ -152,4 +153,9 @@ melem k = lens get set
       (Just v) -> v
     set m v = M.insert k v m
 
-    
+mkRational :: (Integral a) => a -> a -> Rational
+mkRational v1 v2 = fromIntegral v1 % fromIntegral v2
+
+scale :: Integral a => Rational -> a -> a
+scale rat toShare = (toShare * fromIntegral (numerator rat)) `div` fromIntegral (denominator rat)
+
