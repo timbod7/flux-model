@@ -4,7 +4,7 @@
 
 module Flux where
 
-import Control.Lens
+import Control.Lens(view,over,set,makeLenses,lens,Lens')
 
 import qualified Data.Map as M
 
