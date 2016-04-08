@@ -4,10 +4,12 @@
 
 module Flux where
 
+import Data.Maybe(fromMaybe)
 import Control.Lens(view,over,set,makeLenses,lens,Lens')
 import Data.Ratio((%), Rational, numerator, denominator)
 
 import qualified Data.Map as M
+import qualified Data.Set as S
 
 newtype VoterId = VoterId Int deriving (Show,Eq,Ord,Enum)
 newtype IssueId = IssueId Int deriving (Show,Eq,Ord,Enum)
@@ -26,7 +28,10 @@ data VoterState = VoterState {
   _votesPerIssue :: VoteTokens,
 
   -- | The number of liquidity tokens currently held
-  _liquidityTokens :: LiquidityTokens
+  _liquidityTokens :: LiquidityTokens,
+
+  -- | How votes should be delegated
+  _delegation :: M.Map VoterId Rational
 }
                     
   -- | The state for each voter on each issue
@@ -72,7 +77,7 @@ newVoter nVotes state = (state',vid)
   where
     state' = over voters (M.insert vid details) state
     vid = nextKey (view voters state)
-    details = VoterState nVotes 0
+    details = VoterState nVotes 0 M.empty
 
 -- | Create a new issue. Currently registered voters
 -- receive their allocated votes for the issue.
@@ -82,8 +87,18 @@ newIssue state = (state,iid)
   where
     state' = over issues (M.insert iid details) state
     iid = nextKey (view issues state)
-    details = IssueState (M.map newVotorIssueState (view voters state))
-    newVotorIssueState vd = VoterIssueState (view votesPerIssue vd) Abstained
+    details = IssueState (M.fromList [ (vid,VoterIssueState nvotes Abstained)
+                                     | (vid,nvotes) <- M.toList votesPostDelegation])
+
+    votesPreDelegation :: M.Map VoterId VoteTokens
+    votesPreDelegation = M.fromList [ (vid,view votesPerIssue vs) | (vid,vs) <- M.toList (view voters state)]
+
+    votesPostDelegation :: M.Map VoterId VoteTokens
+    votesPostDelegation = delegateVotes delegationGraph votesPreDelegation
+
+    delegationGraph :: DelGraph
+    delegationGraph = foldr (uncurry graphAdd) emptyGraph $
+      [ (vid,view delegation vs) | (vid,vs) <- M.toList (view voters state) ]
 
 -- | Set the vote for a voter on a given issue
 --
@@ -130,9 +145,85 @@ distributeLiquidity  toShare state = over voters (M.map updateVoter) state
   where
     nTotalVotes = sum [view votesPerIssue v | v <- M.elems (view voters state)]
 
-    updateVoter vs = over liquidityTokens ((+) (scale ratio toShare)) vs
+    updateVoter vs = over liquidityTokens ((+) (scale toShare ratio)) vs
       where
         ratio = mkRational (view votesPerIssue vs) nTotalVotes
+
+type VoteAllocation = M.Map VoterId VoteTokens
+
+-- | Given a graph of the delegation specifications between voters and
+-- the votes available to each voter, calculate the final votes per
+-- voter.
+delegateVotes :: DelGraph -> VoteAllocation -> VoteAllocation
+delegateVotes  g alloc
+  | graphSize g == 0 = alloc
+  | otherwise = let (g',alloc') = delegateStep g alloc
+                in if graphSize g' == graphSize g
+                   then error "step made no progress - is graph circular?"
+                   else delegateVotes g' alloc'
+  where                         
+    -- Each step we process the "leaf" voters, ie those that don't
+    -- have any votes delegated to them. Assuming there are no cycles
+    -- in the graph, then each step will produce new leaf votors until
+    -- the graph is empty.
+    delegateStep :: DelGraph -> VoteAllocation -> (DelGraph,VoteAllocation)
+    delegateStep g alloc = (g',alloc')
+      where
+        leafVoters = S.difference (M.keysSet (delegationsTo g)) (M.keysSet (delegationsFrom g))
+        alloc' = foldr distributeVotes alloc (S.toList leafVoters)
+        g' = S.foldr graphRemove g leafVoters
+
+        distributeVotes :: VoterId -> VoteAllocation -> VoteAllocation
+        distributeVotes vid alloc = M.unionWith (+) toAdd $ M.unionWith (-) toRemove $ alloc
+          where
+            availableVotes :: VoteTokens
+            availableVotes = fromMaybe 0 (M.lookup vid alloc)
+        
+            distribRatios :: M.Map VoterId Rational
+            distribRatios = fromMaybe M.empty (M.lookup vid (delegationsTo g))
+
+            toAdd,toRemove:: VoteAllocation
+            toAdd = M.map (scale availableVotes) distribRatios
+            toRemove = M.singleton vid (sum (M.elems toAdd))
+
+----------------------------------------------------------------------
+-- Directed Acyclic Graph structure for representing delegated votes
+
+data DelGraph = DelGraph {
+  delegationsFrom :: M.Map VoterId (S.Set VoterId),
+  delegationsTo :: M.Map VoterId (M.Map VoterId Rational)
+  }
+
+emptyGraph :: DelGraph
+emptyGraph = DelGraph M.empty M.empty
+
+graphAdd :: VoterId -> (M.Map VoterId Rational) -> DelGraph -> DelGraph
+graphAdd vid delegation g@(DelGraph from to)
+  | M.member vid to = graphAdd vid delegation (graphRemove vid g)
+  | M.null delegation = g
+  | otherwise = DelGraph from' to'
+  where
+    from' = undefined
+    to' = M.insert vid delegation to
+
+graphRemove :: VoterId -> DelGraph -> DelGraph
+graphRemove vid g@(DelGraph from to) =
+  case M.lookup vid to of
+    Nothing -> g
+    (Just delegations) -> 
+      let from' = foldr (removeFrom vid) from (M.keys delegations)
+          to' = M.delete vid to
+      in DelGraph from' to'
+  where
+    removeFrom :: VoterId -> VoterId -> M.Map VoterId (S.Set VoterId) -> M.Map VoterId (S.Set VoterId)
+    removeFrom vid0 vid m = case M.lookup vid m of
+      Nothing -> m
+      (Just s) ->
+        let s' = S.delete vid0 s
+        in if S.null s' then M.delete vid m else M.insert vid s' m
+
+graphSize :: DelGraph -> Int
+graphSize g = M.size (delegationsTo g)
 
 ----------------------------------------------------------------------
 -- Helper functions
@@ -156,6 +247,6 @@ melem k = lens get set
 mkRational :: (Integral a) => a -> a -> Rational
 mkRational v1 v2 = fromIntegral v1 % fromIntegral v2
 
-scale :: Integral a => Rational -> a -> a
-scale rat toShare = (toShare * fromIntegral (numerator rat)) `div` fromIntegral (denominator rat)
+scale :: Integral a => a-> Rational -> a
+scale a rat = (a * fromIntegral (numerator rat)) `div` fromIntegral (denominator rat)
 
