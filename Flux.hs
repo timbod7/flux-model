@@ -22,7 +22,7 @@ data State = State {
   _issues :: M.Map IssueId IssueState
   }
 
--- | The state associated with each votor
+-- | The state associated with each voter
 data VoterState = VoterState {
   -- | How many votes received for each new issue
   _votesPerIssue :: VoteTokens,
@@ -66,9 +66,9 @@ initialState = State M.empty M.empty
 
 -- | Register a new voter, and allocate a unique id.
 -- 
--- For each new issue the votor will receive `nVotes`
+-- For each new issue the voter will receive `nVotes`
 -- vote tokens. For most voters `nVotes` will be 1, though
--- polical parties will receive more votes where their
+-- political parties will receive more votes where their
 -- preferences have contributed to the election of a flux
 -- senator.
 --
@@ -80,7 +80,8 @@ newVoter nVotes state = (state',vid)
     details = VoterState nVotes 0 M.empty
 
 -- | Create a new issue. Currently registered voters
--- receive their allocated votes for the issue.
+-- receive their allocated votes for the issue, and their
+-- vote on this issue will default to abstain.
 --    
 newIssue :: State -> (State,IssueId)
 newIssue state = (state,iid)
@@ -102,8 +103,8 @@ newIssue state = (state,iid)
 
 -- | Set the vote for a voter on a given issue
 --
--- Subsequent calls to this function will reset the vote: the last
--- request prior to the issue ending will be used.
+-- Subsequent calls to this function will override previous calls: the
+-- last request prior to the issue ending will be used.
 --
 setVote :: VoterId -> IssueId -> Vote -> State -> State
 setVote vid iid v = set (issues . melem iid . votes . melem vid . vote) v
@@ -151,20 +152,26 @@ distributeLiquidity  toShare state = over voters (M.map updateVoter) state
 
 type VoteAllocation = M.Map VoterId VoteTokens
 
--- | Given a graph of the delegation specifications between voters and
--- the votes available to each voter, calculate the final votes per
--- voter.
+-- | Given a graph of the delegation requests between voters, and
+-- the votes available to each voter, calculate the final distribution
+-- of votes.
+--
+-- Notes:
+--   * The graph must be acyclic.
+--   * Any residual, undelegated vote remains with the original
+--     voter
+--
 delegateVotes :: DelGraph -> VoteAllocation -> VoteAllocation
 delegateVotes  g alloc
   | graphSize g == 0 = alloc
   | otherwise = let (g',alloc') = delegateStep g alloc
                 in if graphSize g' == graphSize g
-                   then error "step made no progress - is graph circular?"
+                   then error "step made no progress - graph contains cycles"
                    else delegateVotes g' alloc'
   where                         
     -- Each step we process the "leaf" voters, ie those that don't
     -- have any votes delegated to them. Assuming there are no cycles
-    -- in the graph, then each step will produce new leaf votors until
+    -- in the graph, then each step will produce new leaf voters until
     -- the graph is empty.
     delegateStep :: DelGraph -> VoteAllocation -> (DelGraph,VoteAllocation)
     delegateStep g alloc = (g',alloc')
