@@ -13,10 +13,22 @@ import qualified Data.Set as S
 
 newtype VoterId = VoterId Int deriving (Show,Eq,Ord,Enum)
 newtype IssueId = IssueId Int deriving (Show,Eq,Ord,Enum)
+
+-- | A quantity of votes for a particular issue.
+--
+-- A fixed pool of vote tokens are created for each issue. The vote tokens can
+-- only be used to vote _for that issue_, or they can be be traded with other
+-- votes in exchange for liquidity tokens.
 newtype VoteTokens = VoteTokens Int deriving (Show,Eq,Ord,Num,Enum,Integral,Real)
+
+-- | A quantity of liquidity tokens.
+--
+-- Liquidity tokens are the medium of exchange by which vote tokens
+-- can be traded between votes. 
 newtype LiquidityTokens = LiquidityTokens Int deriving (Show,Eq,Ord,Num,Enum,Integral,Real)
 
--- | The overall system state
+-- | The overall system state, consisting of information about
+-- each voter, and about each issue.
 data State = State {
   _voters :: M.Map VoterId VoterState,
   _issues :: M.Map IssueId IssueState
@@ -24,7 +36,7 @@ data State = State {
 
 -- | The state associated with each voter
 data VoterState = VoterState {
-  -- | How many votes received for each new issue
+  -- | How many votes this voter will receive for each new issue
   _votesPerIssue :: VoteTokens,
 
   -- | The number of liquidity tokens currently held
