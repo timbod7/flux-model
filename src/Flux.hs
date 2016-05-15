@@ -195,6 +195,14 @@ delegateVotes  g alloc
 
 ----------------------------------------------------------------------
 -- Directed Acyclic Graph structure for representing delegated votes
+--
+-- Invariants:
+--    * The keyset of the delegationsTo map is the set of valid voters.
+--      ie the values in the delegationsTo map, and the keys and values of
+--      the delegationsFrom map must all be valid.
+--    * The values of the delegationsFrom map must never be empty.
+--    * The graph must be acyclic            
+            
 
 data DelGraph = DelGraph {
   delegationsFrom :: M.Map VoterId (S.Set VoterId),

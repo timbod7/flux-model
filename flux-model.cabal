@@ -1,0 +1,37 @@
+name:                flux-model
+version:             0.1.0.0
+synopsis:            Initial project template from stack
+description:         Please see README.md
+homepage:            https://github.com/timbod7/flux-model#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Tim Docker
+maintainer:          tim@dockerz.net
+copyright:           2016 Tim Docker
+category:            Web
+build-type:          Simple
+-- extra-source-files:
+cabal-version:       >=1.10
+
+library
+  hs-source-dirs:      src
+  exposed-modules:     Flux
+  build-depends:       base >= 4.7 && < 5
+                     , containers >= 0.5 && < 0.6
+                     , lens >= 4.13 && < 4.14
+  default-language:    Haskell2010
+
+test-suite flux-model-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:       base
+                     , flux-model
+                     , hspec >= 2.2 && < 2.3
+                     , QuickCheck >= 2.8 && < 2.9
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+source-repository head
+  type:     git
+  location: https://github.com/timbod7/flux-model
